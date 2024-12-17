@@ -11,24 +11,33 @@
 #define false 0
 
 #define CTRL_KEY(k) ((k)& 0x1f)
-#define ESCAPE 27
-
-enum EditorKey{
-    LEFT_ARROW = 'h',
-    RIGHT_ARROW = 'l',
-    UP_ARROW = 'k',
-    DOWN_ARROW ='j'
-};
+#define ESCAPE_KEY 27
+//because of macos change to 10 for linux
+#define RETURN_KEY 13
+#define DELETE_KEY 127
+#define command_size 128
 
 //Flags
 //Visual mode = 1
-#define VisualMode 0xfe
-#define InsertMode 1
+
+enum DimModes{
+    NormalMode = 0,
+    VisualMode,
+    InsertMode,
+    SelectMode,
+    CLMode,
+    ReplaceMode,
+    VirtualReplaceMode,
+    OperatorPendingMode,
+    ExMode,
+    TerminalMode
+};
+
 struct EditorConfig{
     int cx, cy;
     int screen_rows;
     int screen_cols;
-    char flags;
+    char mode;
     struct termios og_termios;
 };
 
@@ -63,18 +72,30 @@ enable_raw_mode(){
     raw.c_lflag &= ~(ECHO | ICANON | ISIG | IEXTEN);
     raw.c_cc[VMIN] = 0;
     //sets how long it takes for read to not recive input and return 0;
-    raw.c_cc[VTIME] = 100000;
+    raw.c_cc[VTIME] = 1000000;
 
     if (tcsetattr(STDIN_FILENO, TCSAFLUSH, &raw) == -1)
         die("tcsetattr");
 }
 
-char
+int
 editor_read_key(){
     int nread;
     char c;
     while ((nread = read(STDIN_FILENO, &c, 1)) == -1){
         if (nread == -1 && errno != EAGAIN) die("read");
+    }
+    if (c == ESCAPE_KEY){
+        char seq[3];
+
+        if (read(STDIN_FILENO, &seq[0], 1) == -1) return ESCAPE_KEY;
+        if (read(STDIN_FILENO, &seq[1], 1) == -1) return ESCAPE_KEY;
+
+        if (seq[0] == '['){
+            if (seq[0] == '['){
+
+            }
+        }
     }
     return c;
 }
@@ -137,7 +158,7 @@ void
 init_editor(){
     E.cx = 0;
     E.cy = 0;
-    E.flags = 0;
+    E.mode = NormalMode;
 
     if (get_window_size(&E.screen_rows, &E.screen_cols) == -1) die("init");
 }
@@ -146,8 +167,7 @@ init_editor(){
 
 void
 editor_draw_rows(struct ABuf *ab){
-    int y;
-    for(y = 0; y < E.screen_rows; ++y){
+    for(int y = 0; y < E.screen_rows; ++y){
         if (y == E.screen_rows / 3){
             char welcome[80];
             int welcome_len = snprintf(welcome, sizeof(welcome),
@@ -196,55 +216,100 @@ editor_refresh_screen(){
 }
 
 void
-editor_move_curosr(char key){
-    if ((E.flags & VisualMode) == E.flags){
-        switch(key){
-            case LEFT_ARROW:
-                if (E.cx != 0){
-                    --E.cx;
+handle_normal(){
+    char c = editor_read_key();
+    //moves curosr
+    switch (c){
+        //left
+        case 'h':
+            if (E.cx != 0){
+                --E.cx;
+            }
+            break;
+        //right
+        case 'l':
+            if (E.cx != E.screen_cols - 1){
+                ++E.cx;
+            }
+            break;
+        //up
+        case 'k':
+            if (E.cy != 0){
+                --E.cy;
+            }
+            break;
+        //down
+        case 'j':
+            if (E.cy != E.screen_rows - 1){
+                ++E.cy;
+            }
+            break;
+        case ':':
+            E.mode = CLMode;
+            break;
+        case 'i':
+            E.mode = InsertMode;
+            break;
+    }
+}
+
+void
+handle_insert(){
+    char c = editor_read_key();
+    switch (c){
+        case ESCAPE_KEY:
+            E.mode = NormalMode;
+            break;
+    }
+}
+
+void
+handle_cl(){
+    char command[command_size] = {0};
+    unsigned char index = 0;
+    while(index < command_size){
+        if (read(STDIN_FILENO, &command[index], 1) == -1) return;
+        switch (command[index]){
+            case ESCAPE_KEY:
+                E.mode = NormalMode;
+                return;
+            case RETURN_KEY:
+                command[index] = '\0';
+                if (strcmp(command, "q") == 0){
+                    write(STDOUT_FILENO, "\x1b[2J", 4);
+                    write(STDOUT_FILENO, "\x1b[H", 3);
+                    exit(0);
+                    return;
                 }
-                break;
-            case RIGHT_ARROW:
-                if (E.cx != E.screen_cols - 1){
-                    ++E.cx;
-                }
-                break;
-            case UP_ARROW:
-                if (E.cy != 0){
-                    --E.cy;
-                }
-                break;
-            case DOWN_ARROW:
-                if (E.cy != E.screen_rows - 1){
-                    ++E.cy;
-                }
+                return;
+            case DELETE_KEY:
+                continue;
+            default:
                 break;
         }
+        ++index;
     }
 }
 
 void
 editor_process_keypress(){
-    char c = editor_read_key();
-
-    switch (c){
-        case 'q':
-        case CTRL_KEY('q'):
-            write(STDOUT_FILENO, "\x1b[2J", 3);
-            write(STDOUT_FILENO, "\x1b[H", 3);
-            exit(0);
+    switch(E.mode){
+        case NormalMode:
+            handle_normal();
             break;
-        case LEFT_ARROW:
-        case RIGHT_ARROW:
-        case UP_ARROW:
-        case DOWN_ARROW:
-            editor_move_curosr(c);
+        case VisualMode:
+        case InsertMode:
+            handle_insert();
             break;
-        case ESCAPE:
-            E.flags &= VisualMode;
+        case SelectMode:
+        case CLMode:
+            handle_cl();
             break;
-        case 'i':
-            E.flags |= InsertMode;
+        case ReplaceMode:
+        case VirtualReplaceMode:
+        case OperatorPendingMode:
+        case ExMode:
+        case TerminalMode:
             break;
     }
 }
