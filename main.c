@@ -16,9 +16,7 @@
 #define RETURN_KEY 13
 #define DELETE_KEY 127
 #define command_size 128
-
-//Flags
-//Visual mode = 1
+#define TIMEOUT_KEY 0
 
 enum DimModes{
     NormalMode = 0,
@@ -31,6 +29,13 @@ enum DimModes{
     OperatorPendingMode,
     ExMode,
     TerminalMode
+};
+
+enum EditorKeys{
+    LEFT_ARROW = 1000,
+    RIGHT_ARROW,
+    DOWN_ARROW,
+    UP_ARROW,
 };
 
 struct EditorConfig{
@@ -72,7 +77,7 @@ enable_raw_mode(){
     raw.c_lflag &= ~(ECHO | ICANON | ISIG | IEXTEN);
     raw.c_cc[VMIN] = 0;
     //sets how long it takes for read to not recive input and return 0;
-    raw.c_cc[VTIME] = 1000000;
+    raw.c_cc[VTIME] = 1;
 
     if (tcsetattr(STDIN_FILENO, TCSAFLUSH, &raw) == -1)
         die("tcsetattr");
@@ -92,8 +97,11 @@ editor_read_key(){
         if (read(STDIN_FILENO, &seq[1], 1) == -1) return ESCAPE_KEY;
 
         if (seq[0] == '['){
-            if (seq[0] == '['){
-
+            switch (seq[1]){
+                case 'A': return UP_ARROW;
+                case 'B': return DOWN_ARROW;
+                case 'C': return RIGHT_ARROW;
+                case 'D': return LEFT_ARROW;
             }
         }
     }
@@ -141,7 +149,8 @@ struct ABuf{
 
 #define ABUF_INIT {NULL, 0}
 
-void ab_append(struct ABuf *abuf, char *s, int len){
+void
+ab_append(struct ABuf *abuf, char *s, int len){
     char *new = realloc(abuf->b, abuf->len + len);
 
     if (new == NULL) return;
@@ -150,7 +159,8 @@ void ab_append(struct ABuf *abuf, char *s, int len){
     abuf->len += len;
 }
 
-void ab_free(struct ABuf *ab){
+void
+ab_free(struct ABuf *ab){
     free(ab->b);
 }
 
@@ -217,28 +227,33 @@ editor_refresh_screen(){
 
 void
 handle_normal(){
-    char c = editor_read_key();
+    int c = editor_read_key();
     //moves curosr
     switch (c){
         //left
+        case LEFT_ARROW:
         case 'h':
             if (E.cx != 0){
                 --E.cx;
             }
             break;
         //right
+        case RIGHT_ARROW:
         case 'l':
             if (E.cx != E.screen_cols - 1){
                 ++E.cx;
             }
             break;
         //up
+        case UP_ARROW:
         case 'k':
             if (E.cy != 0){
                 --E.cy;
             }
             break;
         //down
+        case RETURN_KEY:
+        case DOWN_ARROW:
         case 'j':
             if (E.cy != E.screen_rows - 1){
                 ++E.cy;
@@ -255,8 +270,32 @@ handle_normal(){
 
 void
 handle_insert(){
-    char c = editor_read_key();
+    int c = editor_read_key();
     switch (c){
+        //left
+        case LEFT_ARROW:
+            if (E.cx != 0){
+                --E.cx;
+            }
+            break;
+        //right
+        case RIGHT_ARROW:
+            if (E.cx != E.screen_cols - 1){
+                ++E.cx;
+            }
+            break;
+        //up
+        case UP_ARROW:
+            if (E.cy != 0){
+                --E.cy;
+            }
+            break;
+        //down
+        case DOWN_ARROW:
+            if (E.cy != E.screen_rows - 1){
+                ++E.cy;
+            }
+            break;
         case ESCAPE_KEY:
             E.mode = NormalMode;
             break;
@@ -268,8 +307,13 @@ handle_cl(){
     char command[command_size] = {0};
     unsigned char index = 0;
     while(index < command_size){
-        if (read(STDIN_FILENO, &command[index], 1) == -1) return;
-        switch (command[index]){
+        int result = editor_read_key();
+        switch (result){
+            case UP_ARROW:
+            case DOWN_ARROW:
+            case TIMEOUT_KEY:
+            case DELETE_KEY:
+                continue;
             case ESCAPE_KEY:
                 E.mode = NormalMode;
                 return;
@@ -282,9 +326,8 @@ handle_cl(){
                     return;
                 }
                 return;
-            case DELETE_KEY:
-                continue;
             default:
+                command[index] = (char)result;
                 break;
         }
         ++index;
