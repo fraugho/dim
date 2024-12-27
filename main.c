@@ -1,3 +1,7 @@
+#define _DEFAULT_SOURCE
+#define _BSD_SOURCE
+#define _GNU_SOURCE
+
 #include <unistd.h>
 #include <termios.h>
 #include <stdlib.h>
@@ -36,13 +40,22 @@ enum EditorKeys{
     RIGHT_ARROW,
     DOWN_ARROW,
     UP_ARROW,
+    PAGE_UP,
+    PAGE_DOWN,
 };
+
+typedef struct erow{
+    int size;
+    char *chars;
+} erow;
 
 struct EditorConfig{
     int cx, cy;
     int screen_rows;
     int screen_cols;
     char mode;
+    int num_rows;
+    erow *row;
     struct termios og_termios;
 };
 
@@ -97,6 +110,15 @@ editor_read_key(){
         if (read(STDIN_FILENO, &seq[1], 1) == -1) return ESCAPE_KEY;
 
         if (seq[0] == '['){
+            if (seq[1] >= 0 && seq[1] <= 9){
+                if (read(STDIN_FILENO, &seq[2], 1) == -1) return ESCAPE_KEY;
+                if (seq[2] == '~'){
+                    switch (seq[1]) {
+                        case '5': return PAGE_UP;
+                        case '6': return PAGE_UP;
+                    }
+                }
+            }
             switch (seq[1]){
                 case 'A': return UP_ARROW;
                 case 'B': return DOWN_ARROW;
@@ -104,8 +126,10 @@ editor_read_key(){
                 case 'D': return LEFT_ARROW;
             }
         }
+        return '\x1b';
+    } else {
+        return c;
     }
-    return c;
 }
 
 int
@@ -142,6 +166,38 @@ get_window_size(int *rows, int *cols){
     }
 }
 
+void
+editor_append_row(char *s, size_t len){
+    E.row = realloc(E.row, sizeof(erow) * (E.num_rows + 1));
+
+    int at = E.num_rows;
+    E.row[at].size = len;
+    E.row[at].chars = malloc(len + 1);
+    memcpy(E.row[at].chars, s, len);
+    E.row[at].chars[len] = '\0';
+    ++E.num_rows;
+}
+
+void
+editor_open(char *file_name){
+    FILE *fp = fopen(file_name, "r");
+    if (!fp) die("fopen");
+
+    char *line = NULL;
+    size_t line_cap = 8;
+    ssize_t line_len;
+
+    line_len = getline(&line, &line_cap, fp);
+    while ((line_len = getline(&line, &line_cap, fp)) != -1){
+        while (line_len > 0 && (line[line_len - 1] == '\n' || line[line_len - 1]  == '\r'))
+            --line_len;
+        editor_append_row(line, line_len);
+    }
+    free(line);
+    fclose(fp);
+}
+
+
 struct ABuf{
     char *b;
     int len;
@@ -168,7 +224,9 @@ void
 init_editor(){
     E.cx = 0;
     E.cy = 0;
+    E.num_rows = 0;
     E.mode = NormalMode;
+    E.row = NULL;
 
     if (get_window_size(&E.screen_rows, &E.screen_cols) == -1) die("init");
 }
@@ -178,20 +236,26 @@ init_editor(){
 void
 editor_draw_rows(struct ABuf *ab){
     for(int y = 0; y < E.screen_rows; ++y){
-        if (y == E.screen_rows / 3){
-            char welcome[80];
-            int welcome_len = snprintf(welcome, sizeof(welcome),
-                "dim editor --version %s", DIM_VERSION);
-            if (welcome_len > E.screen_cols) welcome_len = E.screen_cols;
-            int padding = (E.screen_cols - welcome_len) / 2;
-            if (padding){
+        if (y >= E.num_rows){
+            if (E.num_rows == 0 && y == E.screen_rows / 3) {
+                char welcome[80];
+                int welcome_len = snprintf(welcome, sizeof(welcome),
+                                           "dim editor --version %s", DIM_VERSION);
+                if (welcome_len > E.screen_cols) welcome_len = E.screen_cols;
+                int padding = (E.screen_cols - welcome_len) / 2;
+                if (padding){
+                    ab_append(ab, "~", 1);
+                    padding--;
+                }
+                while(padding--) ab_append(ab, " ", 1);
+                ab_append(ab, welcome, welcome_len);
+            } else {
                 ab_append(ab, "~", 1);
-                padding--;
             }
-            while(padding--) ab_append(ab, " ", 1);
-            ab_append(ab, welcome, welcome_len);
         } else {
-            ab_append(ab, "~", 1);
+            int len = E.row[y].size;
+            if (len > E.screen_cols) len = E.screen_cols;
+            ab_append(ab, E.row[y].chars, len);
         }
 
         ab_append(ab, "\x1b[K", 3);
@@ -296,6 +360,32 @@ handle_insert(){
                 ++E.cy;
             }
             break;
+        case PAGE_DOWN:
+            {
+                int times = E.screen_cols;
+                while(times--){
+                    if (E.cy != E.screen_rows - 1){
+                        ++E.cy;
+                    }
+                    else{
+                        break;
+                    }
+                }
+                break;
+            }
+        case PAGE_UP:
+            {
+                int times = E.screen_cols;
+                while(times--){
+                    if (E.cy != 0){
+                        --E.cy;
+                    }
+                    else{
+                        break;
+                    }
+                }
+                break;
+            }
         case ESCAPE_KEY:
             E.mode = NormalMode;
             break;
@@ -358,9 +448,12 @@ editor_process_keypress(){
 }
 
 int
-main (){
+main (int argc, char *argv[]){
     enable_raw_mode();
     init_editor();
+    if (argc >= 2){
+        editor_open(argv[1]);
+    }
 
     while (true){
         editor_refresh_screen();
